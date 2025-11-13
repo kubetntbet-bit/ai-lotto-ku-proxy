@@ -9,10 +9,10 @@ const UA =
 
 function cleanCell(html) {
   return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "") // กันสคริปต์
-    .replace(/<style[\s\S]*?<\/style>/gi, "")  // กันสไตล์
-    .replace(/<[^>]+>/g, "")                  // ตัดแท็ก HTML
-    .replace(/&nbsp;/g, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -23,7 +23,7 @@ export default async function handler(req, res) {
       method: "GET",
       headers: {
         "User-Agent": UA,
-        "Accept": "text/html,application/xhtml+xml",
+        Accept: "text/html,application/xhtml+xml",
       },
     });
 
@@ -36,58 +36,78 @@ export default async function handler(req, res) {
 
     const html = await upstream.text();
 
-    // ดึงทุก <tr> จากตารางในหน้า
+    // 1) พยายามตัดเอาเฉพาะ table ที่เป็น "หวยไทย - 1 นาที"
+    let workHtml = html;
+    const tblMatch = html.match(
+      /หวยไทย\s*-\s*1\s*นาที[\s\S]*?(<table[\s\S]*?<\/table>)/i
+    );
+    if (tblMatch) {
+      workHtml = tblMatch[1];
+    }
+
+    // 2) ดึงทุกแถวใน table
     const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
     const rows = [];
     let m;
-    while ((m = trRegex.exec(html))) {
+    while ((m = trRegex.exec(workHtml))) {
       rows.push(m[0]);
     }
 
-    // หาแถวผลหวย “จริง” แถวแรกที่น่าจะใช่
     let picked = null;
+    let pickedRawRow = null;
+
+    // 3) วนหาแถวแรกที่เป็น "ข้อมูลผลหวย"
     for (const rowHtml of rows) {
-      const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+      // เซลล์อาจเป็น <td> หรือ <th> ทั้งคู่เลยใช้ t[dh]
+      const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
       const cellsHtml = [];
-      let tdm;
-      while ((tdm = tdRegex.exec(rowHtml))) {
-        cellsHtml.push(tdm[1]);
+      let cm;
+      while ((cm = cellRegex.exec(rowHtml))) {
+        cellsHtml.push(cm[1]);
       }
-      if (cellsHtml.length < 6) continue; // ต้องมีอย่างน้อย 6 คอลัมน์
+      if (cellsHtml.length < 6) continue; // ต้องมีอย่างน้อย 6 ช่อง
 
       const cells = cellsHtml.map(cleanCell);
 
-      // cells[2] = รางวัลที่ 1 ควรมีเลขอย่างน้อย 6 หลักติดกัน
+      // cells[2] (รางวัลที่ 1) ควรมีเลขอย่างน้อย 6 หลักติดกัน
       const prize1Digits = (cells[2] || "").replace(/\D/g, "");
       if (prize1Digits.length < 6) continue;
 
-      // cells[5] = 2 ตัวล่าง ควรมีเลขอย่างน้อย 2 หลัก
+      // cells[5] (2 ตัว) ควรมีเลขอย่างน้อย 2 หลัก
       const last2Digits = (cells[5] || "").replace(/\D/g, "");
       if (last2Digits.length < 2) continue;
 
-      // ผ่านเงื่อนไขแล้ว ใช้แถวนี้เลย
       picked = cells;
+      pickedRawRow = rowHtml;
       break;
     }
 
     if (!picked) {
       return res.status(500).json({
         ok: false,
-        message: "ไม่พบแถวผลหวยใน HTML (ลองเช็กโครงสร้างตารางอีกครั้ง)",
+        message: "ไม่พบแถวผลหวยใน HTML (โครงสร้างตารางเปลี่ยน)",
       });
     }
 
     const [roundId, time, prize1, front3, back3, last2raw] = picked;
 
     const prize1Digits = String(prize1).replace(/\D/g, "");
-    const top2 = prize1Digits.slice(-2); // 2 ตัวบน = 2 ตัวท้ายรางวัลที่ 1
-    const bot2 = String(last2raw).replace(/\D/g, "").slice(-2); // 2 ตัวล่าง = คอลัมน์สุดท้าย
+    const top2 = prize1Digits.slice(-2);
+    const bot2 = String(last2raw).replace(/\D/g, "").slice(-2);
 
     if (top2.length !== 2 || bot2.length !== 2) {
       return res.status(500).json({
         ok: false,
         message: "ดึงเลข 2 ตัวบน/ล่างไม่ได้จากแถวที่เลือก",
-        debug: { roundId, time, prize1, front3, back3, last2raw },
+        debug: {
+          roundId,
+          time,
+          prize1,
+          front3,
+          back3,
+          last2raw,
+          rawRowSnippet: pickedRawRow.slice(0, 300),
+        },
       });
     }
 
