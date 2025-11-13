@@ -1,0 +1,9 @@
+{
+  "version": 3,
+  "routes": [
+    {
+      "src": "/api/ku",
+      "dest": "/api/ku-proxy.js"
+    }
+  ]
+}
